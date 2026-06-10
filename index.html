@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Bản Đồ Điều Hướng Ô Tô Thông Minh</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+    <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; width: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; overflow: hidden; }
+        #map { height: 100%; width: 100%; z-index: 1; }
+        
+        /* Tùy biến ô tìm kiếm nằm trên cùng màn hình giống Google Maps */
+        .leaflet-top.leaflet-left {
+            width: 90%;
+            max-width: 400px;
+            margin-top: 10px;
+            margin-left: 5% !important;
+        }
+        .leaflet-control-geocoder {
+            width: 100% !important;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15) !important;
+            border-radius: 24px !important;
+            border: none !important;
+            overflow: hidden;
+            background: #fff !important;
+        }
+        .leaflet-control-geocoder-form input {
+            font-size: 15px !important;
+            padding: 12px 15px !important;
+            width: 85% !important;
+            border: none !important;
+            outline: none !important;
+        }
+
+        /* Bảng điều khiển lộ trình ở dưới đáy màn hình */
+        .nav-bottom-panel {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            background: #ffffff;
+            padding: 20px 15px;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+            box-shadow: 0 -5px 20px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: none;
+            box-sizing: border-box;
+        }
+        .nav-info { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .time-text { font-size: 24px; font-weight: bold; color: #1a73e8; }
+        .sub-text { font-size: 14px; color: #5f6368; margin-top: 4px; }
+        
+        .btn-start-nav {
+            background: #1a73e8; color: white; border: none;
+            width: 100%; padding: 14px; border-radius: 25px;
+            font-size: 16px; font-weight: bold; cursor: pointer;
+            box-shadow: 0 4px 6px rgba(26,115,232,0.3);
+            text-align: center;
+        }
+        .btn-start-nav:active { background: #1557b0; }
+        .navigating .btn-start-nav { background: #d93025; }
+        
+        /* Bảng màu xanh chỉ đường trên cùng */
+        .top-instruction {
+            position: absolute;
+            top: 75px; left: 10px; right: 10px;
+            background: #137333; color: white;
+            padding: 12px; border-radius: 10px;
+            font-size: 16px; font-weight: bold;
+            z-index: 1000; text-align: center;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            display: none;
+        }
+        
+        .leaflet-routing-container { display: none !important; }
+    </style>
+</head>
+<body>
+
+    <div id="top-guide" class="top-instruction">Đang điều hướng di chuyển...</div>
+    <div id="map"></div>
+    
+    <div id="bottom-panel" class="nav-bottom-panel">
+        <div class="nav-info">
+            <div>
+                <div id="nav-time" class="time-text">-- phút</div>
+                <div id="nav-distance" class="sub-text">Quãng đường: -- km</div>
+            </div>
+            <div style="text-align: right;">
+                <div class="sub-text" style="font-weight: bold; color: #34a853;">Tuyến đường tối ưu</div>
+                <div class="sub-text">Né ngõ hẹp ô tô</div>
+            </div>
+        </div>
+        <button id="btn-action" class="btn-start-nav" onclick="toggleNavigation()">BẮT ĐẦU ĐI</button>
+    </div>
+
+    <script>
+        // Khởi tạo bản đồ nền Google Maps chuẩn mượt đẹp
+        var map = L.map('map', { zoomControl: false }).setView([13.9824, 108.0016], 14);
+        
+        L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}', {
+            maxZoom: 20,
+            subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+            attribution: '© Google Maps'
+        }).addTo(map);
+
+        var userLocation = null;
+        var destination = null;
+        var routingControl = null;
+        var carMarker = null;
+        var destMarker = null;
+        var isNavigating = false;
+
+        var carIcon = L.icon({
+            iconUrl: 'https://cdn-icons-png.flaticon.com/512/8113/8113867.png', 
+            iconSize: [40, 40],
+            iconAnchor: [20, 20]
+        });
+
+        // Bật định vị GPS liên tục
+        map.locate({setView: true, maxZoom: 17, watch: true, enableHighAccuracy: true});
+
+        map.on('locationfound', function(e) {
+            userLocation = e.latlng;
+            
+            if (!carMarker) {
+                carMarker = L.marker(userLocation, {icon: carIcon}).addTo(map);
+            } else {
+                carMarker.setLatLng(userLocation);
+            }
+
+            if (isNavigating) {
+                map.setView(userLocation, 18);
+                if (e.heading) map.setBearing(e.heading); 
+            }
+        });
+
+        // HÀM TÍNH TOÁN ĐƯỜNG ĐI NÉ NGÕ HẸP KHÔNG SAI SÓT
+        function drawBestRoute(toLatLng) {
+            if (isNavigating) return;
+            destination = toLatLng;
+
+            if (routingControl) map.removeControl(routingControl);
+            if (destMarker) map.removeLayer(destMarker);
+
+            // Tạo ghim điểm đến B
+            destMarker = L.marker(destination).addTo(map).bindPopup("Điểm đến của bạn").openPopup();
+
+            routingControl = L.Routing.control({
+                waypoints: [L.latLng(userLocation.lat, userLocation.lng), L.latLng(destination.lat, destination.lng)],
+                router: L.Routing.osrmv1({
+                    serviceUrl: 'https://router.project-osrm.org/route/v1',
+                    profile: 'car' // Quét mạng lưới loại bỏ hoàn toàn các hẻm hẹp xe máy
+                }),
+                lineOptions: { styles: [{color: '#1a73e8', weight: 7, opacity: 0.85}] },
+                createMarker: function() { return null; }
+            }).addTo(map);
+
+            routingControl.on('routesfound', function(ev) {
+                var routes = ev.routes;
+                var summary = routes[0].summary;
+                var distKm = (summary.totalDistance / 1000).toFixed(1);
+                var timeMin = Math.round(summary.totalTime / 60);
+
+                document.getElementById('nav-time').innerText = timeMin + " phút";
+                document.getElementById('nav-distance').innerText = "Quãng đường: " + distKm + " km";
+                document.getElementById('bottom-panel').style.display = 'block';
+            });
+        }
+
+        // 1. CÁCH CHỌN ĐIỂM ĐẾN BẰNG THANH TÌM KIẾM ĐỊA CHỈ (MỚI THÊM)
+        var geocoder = L.Control.geocoder({
+            defaultMarkGeocode: false,
+            placeholder: "Tìm địa điểm, tên đường..."
+        })
+        .on('markgeocode', function(e) {
+            var latlng = e.geocode.center;
+            map.setView(latlng, 16);
+            drawBestRoute(latlng); // Tự động tính đường đến điểm vừa tìm
+        })
+        .addTo(map);
+
+        // 2. CÁCH CHỌN ĐIỂM ĐẾN BẰNG CÁCH CHẠM (CLICK) MÀN HÌNH (GIỮ NGUYÊN)
+        map.on('click', function(e) {
+            if (!userLocation) {
+                alert("Đang tìm tín hiệu GPS...");
+                return;
+            }
+            drawBestRoute(e.latlng);
+        });
+
+        // Bật/Tắt chế độ chạy xe định vị giống Google Maps
+        function toggleNavigation() {
+            var actionBtn = document.getElementById('btn-action');
+            var topGuide = document.getElementById('top-guide');
+
+            if (!isNavigating) {
+                isNavigating = true;
+                document.body.classList.add('navigating');
+                actionBtn.innerText = "KẾT THÚC LỘ TRÌNH";
+                actionBtn.style.background = "#d93025";
+                topGuide.innerText = "Lái xe theo hướng bản đồ lớn chỉ dẫn";
+                topGuide.style.display = 'block';
+                map.setView(userLocation, 18);
+            } else {
+                isNavigating = false;
+                document.body.classList.remove('navigating');
+                actionBtn.innerText = "BẮT ĐẦU ĐI";
+                actionBtn.style.background = "#1a73e8";
+                topGuide.style.display = 'none';
+                document.getElementById('bottom-panel').style.display = 'none';
+                if (routingControl) map.removeControl(routingControl);
+                if (destMarker) map.removeLayer(destMarker);
+                map.setView(userLocation, 15);
+            }
+        }
+
+        map.on('locationerror', function() {
+            alert("Lỗi: Hãy cho phép quyền truy cập vị trí trên Chrome để xem bản đồ!");
+        });
+    </script>
+</body>
+</html>
